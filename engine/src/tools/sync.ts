@@ -7,11 +7,18 @@ export const EXPRESS_SERVER_URL = process.env.EXPRESS_SERVER_URL || 'http://loca
 export const ENABLE_CANVAS_SYNC = process.env.ENABLE_CANVAS_SYNC !== 'false'; // Default to true
 export const CANVAS_ID = process.env.CANVAS_ID || 'default';
 
+// Active canvas is mutable at runtime so a single user-level MCP session can
+// switch between canvases (create_canvas / set_active_canvas) without
+// reconnecting. Defaults to the CANVAS_ID env (canvas-level / local behaviour).
+let activeCanvasId = CANVAS_ID;
+export function getActiveCanvasId(): string { return activeCanvasId; }
+export function setActiveCanvasId(id: string): void { activeCanvasId = id; }
+
 // Append canvasId query param to API URLs for multi-canvas support
 export function withCanvasId(url: string): string {
-  if (CANVAS_ID === 'default') return url;
+  if (activeCanvasId === 'default') return url;
   const sep = url.includes('?') ? '&' : '?';
-  return `${url}${sep}canvasId=${encodeURIComponent(CANVAS_ID)}`;
+  return `${url}${sep}canvasId=${encodeURIComponent(activeCanvasId)}`;
 }
 
 // API Response types (local to sync module — avoid conflict with types.ts ApiResponse)

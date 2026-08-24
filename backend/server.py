@@ -213,7 +213,35 @@ async def logout(request: Request, response: Response):
     return {"success": True}
 
 
+@api_router.get("/auth/mcp-token")
+async def get_mcp_token(user: dict = Depends(get_current_user)):
+    """User-level MCP token: lets an AI agent manage & draw on ALL of this user's canvases."""
+    token = user.get("mcp_token")
+    if not token:
+        token = f"usr_{uuid.uuid4().hex}"
+        await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"mcp_token": token}})
+    return {"mcp_token": token}
+
+
+@api_router.post("/auth/mcp-token/rotate")
+async def rotate_mcp_token(user: dict = Depends(get_current_user)):
+    token = f"usr_{uuid.uuid4().hex}"
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"mcp_token": token}})
+    return {"mcp_token": token}
+
+
 # ─────────────────────────── Project routes ───────────────────────────
+def _canvas_shape(p: dict) -> dict:
+    """A user's project presented to the MCP agent as a 'canvas'."""
+    return {
+        "id": p["project_id"],
+        "name": p.get("name"),
+        "elementCount": p.get("element_count", 0),
+        "createdAt": p.get("created_at"),
+        "lastAccessedAt": p.get("updated_at"),
+    }
+
+
 def _public_project(p: dict) -> dict:
     return {
         "project_id": p["project_id"],
@@ -377,6 +405,103 @@ async def mcp_proxy(agent_token: str, path: str, request: Request):
 
     if request.method in ("POST", "PUT", "DELETE"):
         asyncio.create_task(persist_project_scene(project_id))
+
+    return Response(content=resp.content, status_code=resp.status_code,
+                    media_type=resp.headers.get("content-type", "application/json"))
+
+
+# ───────── User-level MCP endpoint (one token manages ALL the user's canvases) ─────────
+async def _user_from_mcp_token(user_token: str) -> dict:
+    user = await db.users.find_one({"mcp_token": user_token}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid MCP token")
+    return user
+
+
+@api_router.api_route("/mcp/{user_token}/api/{path:path}",
+                      methods=["GET", "POST", "PUT", "DELETE"])
+async def user_mcp_proxy(user_token: str, path: str, request: Request):
+    """User-scoped MCP proxy.
+
+    - /api/canvases            -> the user's projects (list / create)
+    - /api/canvases/{id}       -> get / delete an owned project
+    - everything else          -> element/scene/export ops on ?canvasId=<owned project>
+    Ownership is verified on every call, so one token safely spans all the
+    user's canvases without leaking into anyone else's.
+    """
+    user = await _user_from_mcp_token(user_token)
+    uid = user["user_id"]
+    method = request.method
+
+    # ---- Canvas management, mapped onto the user's projects ----
+    if path == "canvases":
+        if method == "GET":
+            cur = db.projects.find({"user_id": uid}, {"_id": 0}).sort("updated_at", -1)
+            items = [_canvas_shape(p) async for p in cur]
+            return {"success": True, "canvases": items, "count": len(items)}
+        if method == "POST":
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            name = (body or {}).get("name") or "Untitled canvas"
+            now = datetime.now(timezone.utc).isoformat()
+            project = {
+                "project_id": f"proj_{uuid.uuid4().hex[:16]}",
+                "user_id": uid, "name": name, "description": "",
+                "agent_token": f"agt_{uuid.uuid4().hex}", "element_count": 0,
+                "created_at": now, "updated_at": now,
+            }
+            await db.projects.insert_one(dict(project))
+            await db.scenes.insert_one({"project_id": project["project_id"], "elements": [], "updated_at": now})
+            return {"success": True, "canvas": _canvas_shape(project)}
+        raise HTTPException(status_code=405, detail="Method not allowed")
+
+    if path.startswith("canvases/"):
+        cid = path.split("/", 1)[1]
+        proj = await db.projects.find_one({"project_id": cid, "user_id": uid}, {"_id": 0})
+        if not proj:
+            raise HTTPException(status_code=404, detail="Canvas not found")
+        if method == "GET":
+            return {"success": True, "canvas": _canvas_shape(proj)}
+        if method == "DELETE":
+            await db.projects.delete_one({"project_id": cid})
+            await db.scenes.delete_one({"project_id": cid})
+            _hydrated.discard(cid)
+            try:
+                await http.delete(f"{ENGINE_URL}/api/canvases/{cid}", headers=ENGINE_HEADERS)
+            except Exception:
+                pass
+            return {"success": True, "message": f"Canvas {cid} deleted"}
+        raise HTTPException(status_code=405, detail="Method not allowed")
+
+    # ---- Element / scene / export ops: require an owned canvasId ----
+    params = dict(request.query_params)
+    canvas_id = params.pop("canvasId", None)
+    if not canvas_id or canvas_id == "default":
+        raise HTTPException(
+            status_code=400,
+            detail="No active canvas. Call create_canvas or set_active_canvas (to a canvas id from list_canvases) first.",
+        )
+    proj = await db.projects.find_one({"project_id": canvas_id, "user_id": uid}, {"_id": 0})
+    if not proj:
+        raise HTTPException(status_code=403, detail="You do not own this canvas")
+
+    await ensure_hydrated(canvas_id)
+    params["canvasId"] = canvas_id
+    body = await request.body()
+    fwd_headers = {"x-engine-secret": ENGINE_SECRET}
+    if request.headers.get("content-type"):
+        fwd_headers["content-type"] = request.headers["content-type"]
+
+    try:
+        resp = await http.request(method, f"{ENGINE_URL}/api/{path}",
+                                  params=params, content=body, headers=fwd_headers)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Engine error: {exc}")
+
+    if method in ("POST", "PUT", "DELETE"):
+        asyncio.create_task(persist_project_scene(canvas_id))
 
     return Response(content=resp.content, status_code=resp.status_code,
                     media_type=resp.headers.get("content-type", "application/json"))

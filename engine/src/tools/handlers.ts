@@ -26,6 +26,8 @@ import {
   batchCreateElementsOnCanvas,
   batchUpdateElementsOnCanvas,
   getElementFromCanvas,
+  getActiveCanvasId,
+  setActiveCanvasId,
 } from './sync.js';
 import {
   ServerElement,
@@ -50,6 +52,62 @@ export async function handleToolCall(
 ): Promise<{ content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>; isError?: boolean }> {
   try {
     switch (name) {
+      case 'list_canvases': {
+        // User-level: the gateway maps /api/canvases to the caller's own projects.
+        const response = await fetch(`${EXPRESS_SERVER_URL}/api/canvases`);
+        if (!response.ok) {
+          throw new Error(`Failed to list canvases: ${response.status} ${response.statusText}`);
+        }
+        const data = await response.json();
+        return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+      }
+
+      case 'create_canvas': {
+        const { name: canvasName } = z.object({ name: z.string().optional() }).parse(args);
+        const response = await fetch(`${EXPRESS_SERVER_URL}/api/canvases`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: canvasName })
+        });
+        const data = await response.json() as { success?: boolean; canvas?: { id: string }; error?: string };
+        if (!response.ok || !data.canvas?.id) {
+          throw new Error(`Failed to create canvas: ${data.error || response.statusText}`);
+        }
+        setActiveCanvasId(data.canvas.id);
+        return {
+          content: [{
+            type: 'text',
+            text: `Canvas created and set active: ${data.canvas.id}\n\n${JSON.stringify(data, null, 2)}\n\n✅ Element operations now target this canvas.`
+          }]
+        };
+      }
+
+      case 'delete_canvas': {
+        const { canvasId: cid } = z.object({ canvasId: z.string() }).parse(args);
+        const response = await fetch(`${EXPRESS_SERVER_URL}/api/canvases/${encodeURIComponent(cid)}`, { method: 'DELETE' });
+        const data = await response.json() as { success?: boolean; error?: string };
+        if (!response.ok) {
+          throw new Error(`Failed to delete canvas: ${data.error || response.statusText}`);
+        }
+        if (getActiveCanvasId() === cid) setActiveCanvasId('default');
+        return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+      }
+
+      case 'set_active_canvas': {
+        const { canvasId: cid } = z.object({ canvasId: z.string() }).parse(args);
+        setActiveCanvasId(cid);
+        return {
+          content: [{
+            type: 'text',
+            text: `Active canvas set to: ${cid}. Element operations (create/update/delete/query/export) will now target this canvas.`
+          }]
+        };
+      }
+
+      case 'get_active_canvas': {
+        return { content: [{ type: 'text', text: JSON.stringify({ activeCanvasId: getActiveCanvasId() }, null, 2) }] };
+      }
+
       case 'create_element': {
         const params = ElementSchema.parse(args);
         logger.info('Creating element via MCP', { type: params.type });

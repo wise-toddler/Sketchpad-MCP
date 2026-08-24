@@ -513,5 +513,47 @@ export const tools: Tool[] = [
       properties: {},
       required: []
     }
+  },
+  {
+    name: 'list_canvases',
+    description: 'List all canvases you have access to (user-level). Returns id, name and element count for each. Use the id with set_active_canvas or as the target of element operations.',
+    inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'create_canvas',
+    description: 'Create a new canvas and make it the active canvas. Subsequent element operations target it until you switch with set_active_canvas.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Human-friendly name for the new canvas' }
+      }
+    }
+  },
+  {
+    name: 'delete_canvas',
+    description: 'Delete a canvas by id. If it was the active canvas, the active canvas resets to default.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        canvasId: { type: 'string', description: 'The canvas id to delete' }
+      },
+      required: ['canvasId']
+    }
+  },
+  {
+    name: 'set_active_canvas',
+    description: 'Set which canvas subsequent element operations (create/update/delete/query/export) target. Call list_canvases to discover ids.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        canvasId: { type: 'string', description: 'The canvas id to make active' }
+      },
+      required: ['canvasId']
+    }
+  },
+  {
+    name: 'get_active_canvas',
+    description: 'Return the id of the canvas currently targeted by element operations.',
+    inputSchema: { type: 'object', properties: {} }
   }
 ];
