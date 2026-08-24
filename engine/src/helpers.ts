@@ -1,0 +1,258 @@
+import { Request } from 'express';
+import os from 'os';
+import path from 'path';
+import { ServerElement, elements, normalizeFontFamily, generateId } from './types.js';
+
+// --- Helpers from server.ts ---
+
+// Extract canvasId from query param or header, default to 'default'
+export function getCanvasId(req: Request): string {
+  return (req.query.canvasId as string) || (req.headers['x-canvas-id'] as string) || 'default';
+}
+
+export function normalizeLineBreakMarkup(text: string): string {
+  return text
+    .replace(/<\s*b\s*r\s*\/?\s*>/gi, '\n')
+    .replace(/\n{3,}/g, '\n\n');
+}
+
+// Helper: compute edge point for an element given a direction toward a target
+export function computeEdgePoint(
+  el: ServerElement,
+  targetCenterX: number,
+  targetCenterY: number
+): { x: number; y: number } {
+  const cx = el.x + (el.width || 0) / 2;
+  const cy = el.y + (el.height || 0) / 2;
+  const dx = targetCenterX - cx;
+  const dy = targetCenterY - cy;
+
+  if (el.type === 'diamond') {
+    // Diamond edge: use diamond geometry (rotated square)
+    const hw = (el.width || 0) / 2;
+    const hh = (el.height || 0) / 2;
+    if (dx === 0 && dy === 0) return { x: cx, y: cy + hh };
+    const absDx = Math.abs(dx);
+    const absDy = Math.abs(dy);
+    // Scale factor to reach diamond edge
+    const scale = (absDx / hw + absDy / hh) > 0
+      ? 1 / (absDx / hw + absDy / hh)
+      : 1;
+    return { x: cx + dx * scale, y: cy + dy * scale };
+  }
+
+  if (el.type === 'ellipse') {
+    // Ellipse edge: parametric intersection
+    const a = (el.width || 0) / 2;
+    const b = (el.height || 0) / 2;
+    if (dx === 0 && dy === 0) return { x: cx, y: cy + b };
+    const angle = Math.atan2(dy, dx);
+    return { x: cx + a * Math.cos(angle), y: cy + b * Math.sin(angle) };
+  }
+
+  // Rectangle: find intersection with edges
+  const hw = (el.width || 0) / 2;
+  const hh = (el.height || 0) / 2;
+  if (dx === 0 && dy === 0) return { x: cx, y: cy + hh };
+  const angle = Math.atan2(dy, dx);
+  const tanA = Math.tan(angle);
+  // Check if ray intersects top/bottom edge or left/right edge
+  if (Math.abs(tanA * hw) <= hh) {
+    // Intersects left or right edge
+    const signX = dx >= 0 ? 1 : -1;
+    return { x: cx + signX * hw, y: cy + signX * hw * tanA };
+  } else {
+    // Intersects top or bottom edge
+    const signY = dy >= 0 ? 1 : -1;
+    return { x: cx + signY * hh / tanA, y: cy + signY * hh };
+  }
+}
+
+// Helper: resolve arrow bindings in a batch
+export function resolveArrowBindings(batchElements: ServerElement[], canvasElements: Map<string, ServerElement> = elements): void {
+  const elementMap = new Map<string, ServerElement>();
+  batchElements.forEach(el => elementMap.set(el.id, el));
+
+  // Also check existing elements for cross-batch references
+  canvasElements.forEach((el, id) => {
+    if (!elementMap.has(id)) elementMap.set(id, el);
+  });
+
+  for (const el of batchElements) {
+    if (el.type !== 'arrow' && el.type !== 'line') continue;
+    const startRef = (el as any).start as { id: string } | undefined;
+    const endRef = (el as any).end as { id: string } | undefined;
+
+    if (!startRef && !endRef) continue;
+
+    const startEl = startRef ? elementMap.get(startRef.id) : undefined;
+    const endEl = endRef ? elementMap.get(endRef.id) : undefined;
+
+    // Calculate arrow path from edge to edge
+    const startCenter = startEl
+      ? { x: startEl.x + (startEl.width || 0) / 2, y: startEl.y + (startEl.height || 0) / 2 }
+      : { x: el.x, y: el.y };
+    const endCenter = endEl
+      ? { x: endEl.x + (endEl.width || 0) / 2, y: endEl.y + (endEl.height || 0) / 2 }
+      : { x: el.x + 100, y: el.y };
+
+    const GAP = 8;
+    const startPt = startEl
+      ? computeEdgePoint(startEl, endCenter.x, endCenter.y)
+      : startCenter;
+    const endPt = endEl
+      ? computeEdgePoint(endEl, startCenter.x, startCenter.y)
+      : endCenter;
+
+    // Apply gap: move start point slightly away from source, end point slightly away from target
+    const startDx = endPt.x - startPt.x;
+    const startDy = endPt.y - startPt.y;
+    const startDist = Math.sqrt(startDx * startDx + startDy * startDy) || 1;
+    const endDx = startPt.x - endPt.x;
+    const endDy = startPt.y - endPt.y;
+    const endDist = Math.sqrt(endDx * endDx + endDy * endDy) || 1;
+
+    const finalStart = {
+      x: startPt.x + (startDx / startDist) * GAP,
+      y: startPt.y + (startDy / startDist) * GAP
+    };
+    const finalEnd = {
+      x: endPt.x + (endDx / endDist) * GAP,
+      y: endPt.y + (endDy / endDist) * GAP
+    };
+
+    // Set arrow position and points
+    el.x = finalStart.x;
+    el.y = finalStart.y;
+    el.points = [[0, 0], [finalEnd.x - finalStart.x, finalEnd.y - finalStart.y]];
+
+    // Do NOT delete `start` and `end` here.
+    // Excalidraw's frontend `convertToExcalidrawElements` method looks for these exact properties
+    // to calculate mathematically sound `startBinding`, `endBinding`, `focus`, `gap`, and `boundElements`.
+  }
+}
+
+// --- Helpers from index.ts ---
+
+// Normalize points to [x, y] tuple format that Excalidraw expects
+export function normalizePoints(points: Array<{ x: number; y: number } | [number, number]>): [number, number][] {
+  return points.map(p => {
+    if (Array.isArray(p)) return p as [number, number];
+    return [p.x, p.y] as [number, number];
+  });
+}
+
+// Helper function to convert text property to label format for Excalidraw
+export function convertTextToLabel(element: ServerElement): ServerElement {
+  const { text, ...rest } = element;
+  if (text) {
+    // For standalone text elements, keep text as direct property
+    if (element.type === 'text') {
+      return element; // Keep text as direct property
+    }
+    // For other elements (rectangle, ellipse, diamond), convert to label format.
+    // Propagate fontSize/fontFamily into the label — Excalidraw's convertToExcalidrawElements
+    // reads these from the label object, NOT the container shape. Without this the bound
+    // text renders at the default size regardless of the requested fontSize (issue #11).
+    const label: { text: string; fontSize?: number; fontFamily?: number } = { text };
+    if (element.fontSize !== undefined) label.fontSize = element.fontSize;
+    const ff = normalizeFontFamily(element.fontFamily);
+    if (ff !== undefined) label.fontFamily = ff;
+    return {
+      ...rest,
+      label
+    } as ServerElement;
+  }
+  return element;
+}
+
+// Normalize a label's fontFamily to the numeric value Excalidraw expects.
+// Direct REST callers may pass a string fontFamily (e.g. "helvetica") on the label.
+export function normalizeLabel(label: ServerElement['label']): ServerElement['label'] {
+  if (!label) return label;
+  const ff = normalizeFontFamily(label.fontFamily);
+  return ff !== undefined ? { ...label, fontFamily: ff } : label;
+}
+
+// Safe file path validation to prevent path traversal attacks
+export const ALLOWED_EXPORT_DIRS = (process.env.EXCALIDRAW_EXPORT_DIR || process.cwd())
+  .split(path.delimiter)
+  .concat([os.tmpdir(), '/tmp'])
+  .map(d => path.resolve(d));
+
+export function sanitizeFilePath(filePath: string): string {
+  const resolved = path.resolve(filePath);
+  const allowed = ALLOWED_EXPORT_DIRS.some(dir =>
+    resolved.startsWith(dir + path.sep) || resolved === dir
+  );
+  if (!allowed) {
+    throw new Error(
+      `Path traversal blocked: "${filePath}" resolves outside allowed directories. ` +
+      `Set EXCALIDRAW_EXPORT_DIR to add more allowed directories (${path.delimiter}-separated).`
+    );
+  }
+  return resolved;
+}
+
+// Shared labelPosition expansion used by BOTH create_element and
+// batch_create_elements (de-duplicated). A non-center label on a shape becomes
+// the bare shape plus a free-standing text element; everything else passes
+// through unchanged (with the labelPosition prop stripped).
+export function expandLabelPosition(el: ServerElement): ServerElement[] {
+  const labelPos = (el as any).labelPosition as string | undefined;
+  const textContent = (el as any).text as string | undefined;
+
+  if (labelPos && labelPos !== 'center' && textContent &&
+      el.type !== 'text' && el.type !== 'arrow' && el.type !== 'line') {
+    const { text: _t, labelPosition: _lp, ...shapeProps } = el as any;
+    const shapeElement = shapeProps as ServerElement;
+
+    const padding = 10;
+    const shapeX = el.x;
+    const shapeY = el.y;
+    const shapeW = el.width || 160;
+    const shapeH = el.height || 80;
+
+    let textX = shapeX + padding;
+    let textY = shapeY + padding;
+
+    switch (labelPos) {
+      case 'top-left': textX = shapeX + padding; textY = shapeY + padding; break;
+      case 'top-center': textX = shapeX + shapeW / 4; textY = shapeY + padding; break;
+      case 'top-right': textX = shapeX + shapeW - padding - 100; textY = shapeY + padding; break;
+      case 'bottom-left': textX = shapeX + padding; textY = shapeY + shapeH - padding - 24; break;
+      case 'bottom-center': textX = shapeX + shapeW / 4; textY = shapeY + shapeH - padding - 24; break;
+      case 'bottom-right': textX = shapeX + shapeW - padding - 100; textY = shapeY + shapeH - padding - 24; break;
+    }
+
+    const textElement: ServerElement = {
+      id: generateId(),
+      type: 'text' as ServerElement['type'],
+      x: textX,
+      y: textY,
+      width: shapeW / 2,
+      height: 24,
+      text: textContent,
+      fontSize: (el as any).fontSize || 16,
+      fontFamily: normalizeFontFamily((el as any).fontFamily) || 1,
+    };
+
+    return [shapeElement, textElement];
+  }
+
+  const { labelPosition: _lp, ...clean } = el as any;
+  return [clean as ServerElement];
+}
+
+// Derive group membership from element.groupIds — the durable source of truth
+// on the canvas server, so groups survive the stateless MCP proxy.
+export function computeGroupsFromElements(els: ServerElement[]): Record<string, string[]> {
+  const groups: Record<string, string[]> = {};
+  for (const el of els) {
+    for (const gid of (el.groupIds || [])) {
+      if (!groups[gid]) groups[gid] = [];
+      groups[gid]!.push(el.id);
+    }
+  }
+  return groups;
+}
