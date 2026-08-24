@@ -6,6 +6,7 @@ import apiClient from "@/lib/apiClient";
 import ExcalidrawCanvasView from "@/components/canvas/ExcalidrawCanvasView";
 import McpAgentConnectPanel from "@/components/canvas/McpAgentConnectPanel";
 import { exportPng, exportSvg, exportJson } from "@/lib/excalidrawExport";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
 } from "@/components/ui/dropdown-menu";
@@ -82,6 +83,7 @@ export default function CanvasPage() {
         </div>
 
         <div className="flex items-center gap-2">
+          <ThemeToggle />
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button

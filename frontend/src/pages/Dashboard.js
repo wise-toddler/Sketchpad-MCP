@@ -6,6 +6,7 @@ import {
 import { toast } from "sonner";
 import apiClient from "@/lib/apiClient";
 import { useAuth } from "@/context/AuthContext";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -99,6 +100,7 @@ export default function Dashboard() {
               <img src={user.picture} alt={user.name} className="w-8 h-8 rounded-full border border-border" />
             )}
             <span className="text-sm text-muted-foreground hidden sm:block">{user?.name}</span>
+            <ThemeToggle />
             <button
               onClick={logout}
               data-testid="logout-btn"

@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-route
 import { Loader2 } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
+import { ThemeProvider } from "@/context/ThemeContext";
 import AuthCallback from "@/components/auth/AuthCallback";
 import Login from "@/pages/Login";
 import Dashboard from "@/pages/Dashboard";
@@ -43,12 +44,14 @@ function AppRouter() {
 
 function App() {
   return (
-    <AuthProvider>
-      <BrowserRouter>
-        <AppRouter />
-      </BrowserRouter>
-      <Toaster theme="dark" position="top-right" richColors />
-    </AuthProvider>
+    <ThemeProvider>
+      <AuthProvider>
+        <BrowserRouter>
+          <AppRouter />
+        </BrowserRouter>
+        <Toaster theme="dark" position="top-right" richColors />
+      </AuthProvider>
+    </ThemeProvider>
   );
 }
 

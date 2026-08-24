@@ -3,6 +3,7 @@ import { Excalidraw, convertToExcalidrawElements } from "@excalidraw/excalidraw"
 import "@excalidraw/excalidraw/index.css";
 import { WS_BASE } from "@/lib/apiClient";
 import apiClient from "@/lib/apiClient";
+import { useTheme } from "@/context/ThemeContext";
 
 const AUTO_SYNC_MS = 1200;
 
@@ -58,6 +59,7 @@ const convertScene = (elements) => {
 };
 
 export default function ExcalidrawCanvasView({ projectId, apiRef, onConnectionChange }) {
+  const { theme } = useTheme();
   const [excalidrawAPI, setExcalidrawAPI] = useState(null);
   const apiInstance = useRef(null);
   const wsRef = useRef(null);
@@ -173,13 +175,13 @@ export default function ExcalidrawCanvasView({ projectId, apiRef, onConnectionCh
       onKeyDownCapture={() => { userInteractedRef.current = true; }}
     >
       <Excalidraw
+        theme={theme}
         excalidrawAPI={(api) => {
           apiInstance.current = api;
           setExcalidrawAPI(api);
           if (apiRef) apiRef.current = api;
         }}
         onChange={scheduleSync}
-        initialData={{ appState: { theme: "dark", viewBackgroundColor: "#0b0f17" } }}
       />
     </div>
   );

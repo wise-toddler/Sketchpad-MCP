@@ -1,0 +1,22 @@
+{
+  "summary": "Frontend-only visual/theme regression check for Excalidraw canvas dark background. All targeted checks PASS. The canvas at /canvas/proj_88adc10502534ceb now renders with a dark obsidian background cohesive with the dark toolbar/UI. Excalidraw root has class 'theme--dark'. Seeded rectangles are visible. LIVE·SYNCED shown. MCP panel toggle + Simulate AI Draw regression works — new shapes drawn live on the dark canvas with success toast.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "ExcalidrawCanvasView.js correctly passes theme='dark' and omits viewBackgroundColor, which is the correct fix — Excalidraw dark theme uses CSS invert filter on the canvas, so leaving the default light bg lets the filter produce the intended dark canvas. Any future forced viewBackgroundColor override would re-introduce the bug."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (skipped)", "frontend": "100%"},
+  "test_credentials": "cookie session_token=test_session_token_123 (user_testabc123) — seeded via mongosh into test_database.user_sessions",
+  "seed_data_creation": "Re-upserted user_testabc123 + session token test_session_token_123 in test_database (idempotent).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "The Excalidraw dark theme uses a CSS invert filter on the <canvas>; raw getImageData will return light pixel values even though the visible canvas is dark. Use screenshots (not pixel sampling) to verify dark canvas rendering. Test project: proj_88adc10502534ceb, seeded session cookie session_token=test_session_token_123.",
+  "rca of the issue": "Root cause was already fixed by E1: Excalidraw's dark theme applies filter: invert(93%) hue-rotate(180deg) to the canvas. A forced viewBackgroundColor='#0b0f17' was being inverted to light gray (~#e8e8ea). Fix (verified in /app/frontend/src/components/canvas/ExcalidrawCanvasView.js) removes the viewBackgroundColor override and passes theme='dark' so the default light canvas is inverted into a proper dark obsidian bg."
+}
