@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { X, Copy, Check, RefreshCw, Sparkles, Terminal, Bot, Layers, Loader2 } from "lucide-react";
+import { X, Copy, Check, RefreshCw, Sparkles, Terminal, Bot, Layers, Loader2, GraduationCap, BookOpen } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import apiClient from "@/lib/apiClient";
@@ -38,6 +38,17 @@ export default function McpAgentConnectPanel({ project, open, onClose, onSimulat
     toast.success("Copied to clipboard");
     setTimeout(() => setCopied(""), 1500);
   };
+
+  const skillUrl = `${BACKEND_URL}/api/agent-skill`;
+  const quickstart = `You have Excalidraw MCP tools (excalidraw/*) connected to my hosted account.
+Workflow:
+1) Call list_canvases. To draw on an existing canvas, set_active_canvas(canvasId="<id>"). To start fresh, create_canvas(name="<name>") (it becomes active). Element ops need an active canvas.
+2) Call read_diagram_guide, then use batch_create_elements to draw. Bind arrows with startElementId/endElementId; add labels via "text".
+3) Use describe_scene and get_canvas_screenshot to review your work, then refine.
+4) If an action says the canvas was "not found / may have been deleted", call list_canvases and set_active_canvas again.
+5) export_to_excalidraw_url returns a shareable link.
+This canvas id: ${project.project_id}
+Full skill: ${skillUrl}`;
 
   const rotate = async () => {
     setRotating(true);
@@ -96,6 +107,29 @@ export default function McpAgentConnectPanel({ project, open, onClose, onSimulat
               (<code className="font-mono text-xs text-primary">list_canvases</code>, <code className="font-mono text-xs text-primary">create_canvas</code>,
               {" "}<code className="font-mono text-xs text-primary">set_active_canvas</code>) and draw on any of them — all scoped to you.
             </p>
+          </div>
+
+          <div className="rounded-xl border border-border bg-card/40 px-4 py-3">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="font-mono text-xs uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                <GraduationCap className="w-3.5 h-3.5 text-primary" /> Teach your agent
+              </span>
+              <button onClick={() => copy(quickstart, "quickstart")} data-testid="copy-quickstart-btn" className="text-primary hover:text-primary/80">
+                {copied === "quickstart" ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+              </button>
+            </div>
+            <p className="text-xs text-muted-foreground leading-relaxed mb-2.5">
+              Paste this into your agent so it uses the tools correctly (pick a canvas → guide → draw → refine → export).
+            </p>
+            <a
+              href={skillUrl}
+              target="_blank"
+              rel="noreferrer"
+              data-testid="open-skill-link"
+              className="inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:underline"
+            >
+              <BookOpen className="w-3.5 h-3.5" /> Open full SKILL.md
+            </a>
           </div>
 
           <button

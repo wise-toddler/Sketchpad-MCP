@@ -21,7 +21,7 @@ from typing import Optional, List
 import httpx
 import websockets
 from fastapi import FastAPI, APIRouter, Request, Response, HTTPException, Depends, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
@@ -573,6 +573,19 @@ async def ws_canvas(websocket: WebSocket, project_id: str):
 @api_router.get("/")
 async def root():
     return {"service": "excalidraw-mcp-cloud-gateway", "status": "ok"}
+
+
+SKILL_PATH = Path("/app/engine/skills/excalidraw-cloud-skill/SKILL.md")
+
+
+@api_router.get("/agent-skill")
+async def agent_skill():
+    """The Agent Skill (SKILL.md) that teaches an AI agent how to use this hosted MCP."""
+    try:
+        text = SKILL_PATH.read_text(encoding="utf-8")
+    except Exception:
+        text = "# Excalidraw MCP Cloud — Agent Skill\n\nSkill file not found."
+    return PlainTextResponse(text, media_type="text/markdown; charset=utf-8")
 
 
 app.include_router(api_router)
