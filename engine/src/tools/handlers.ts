@@ -95,6 +95,21 @@ export async function handleToolCall(
 
       case 'set_active_canvas': {
         const { canvasId: cid } = z.object({ canvasId: z.string() }).parse(args);
+        // Validate the target still exists / is accessible before switching, so a
+        // typo or an already-deleted canvas fails fast with a clear message.
+        try {
+          const listResp = await fetch(`${EXPRESS_SERVER_URL}/api/canvases`);
+          if (listResp.ok) {
+            const data = await listResp.json() as { canvases?: Array<{ id: string }> };
+            const ids = (data.canvases || []).map(c => c.id);
+            if (ids.length > 0 && !ids.includes(cid)) {
+              throw new Error(`Canvas "${cid}" not found or not accessible. Call list_canvases to see available canvas ids.`);
+            }
+          }
+        } catch (e) {
+          if ((e as Error).message.includes('not found or not accessible')) throw e;
+          // If the listing itself failed (network/local mode), fall through and set anyway.
+        }
         setActiveCanvasId(cid);
         return {
           content: [{
@@ -144,7 +159,7 @@ export async function handleToolCall(
         const canvasElements = await batchCreateElementsOnCanvas(toCreate);
 
         if (!canvasElements) {
-          throw new Error('Failed to create element: HTTP server unavailable');
+          throw new Error('Failed to create element — the target canvas is unavailable or may have been deleted. Call list_canvases, then set_active_canvas (or create_canvas), and retry.');
         }
 
         logger.info('Element created via MCP and synced to canvas', {
@@ -655,7 +670,7 @@ export async function handleToolCall(
         const canvasElements = await batchCreateElementsOnCanvas(expandedElements);
 
         if (!canvasElements) {
-          throw new Error('Failed to batch create elements: HTTP server unavailable');
+          throw new Error('Failed to batch create elements — the target canvas is unavailable or may have been deleted. Call list_canvases, then set_active_canvas (or create_canvas), and retry.');
         }
 
         const result = {

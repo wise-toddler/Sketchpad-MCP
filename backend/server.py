@@ -485,7 +485,14 @@ async def user_mcp_proxy(user_token: str, path: str, request: Request):
         )
     proj = await db.projects.find_one({"project_id": canvas_id, "user_id": uid}, {"_id": 0})
     if not proj:
-        raise HTTPException(status_code=403, detail="You do not own this canvas")
+        exists = await db.projects.find_one({"project_id": canvas_id}, {"_id": 0})
+        if exists:
+            raise HTTPException(status_code=403, detail="You do not own this canvas")
+        raise HTTPException(
+            status_code=404,
+            detail=(f"Canvas '{canvas_id}' not found — it may have been deleted. "
+                    "Call list_canvases and set_active_canvas to pick a valid canvas, or create_canvas."),
+        )
 
     await ensure_hydrated(canvas_id)
     params["canvasId"] = canvas_id
