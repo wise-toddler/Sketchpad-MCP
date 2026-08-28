@@ -111,6 +111,22 @@ export function setupWebSocket(httpServer: import('http').Server): WebSocketServ
     };
     ws.send(JSON.stringify(syncMessage));
 
+    // Relay presence/cursor messages to other clients on the same canvas (co-editing).
+    ws.on('message', (raw: any) => {
+      try {
+        const msg = JSON.parse(raw.toString());
+        if (msg && (msg.type === 'pointer' || msg.type === 'presence' || msg.type === 'presence_leave')) {
+          const canvasOf = clientCanvasMap.get(ws) || 'default';
+          const data = JSON.stringify(msg);
+          clients.forEach(client => {
+            if (client !== ws && clientCanvasMap.get(client) === canvasOf && client.readyState === WebSocket.OPEN) {
+              try { client.send(data); } catch (_) { /* ignore */ }
+            }
+          });
+        }
+      } catch (_) { /* ignore non-JSON */ }
+    });
+
     ws.on('close', () => {
       clients.delete(ws);
       clientCanvasMap.delete(ws);

@@ -72,6 +72,7 @@ class ProjectUpdate(BaseModel):
 class ScenePut(BaseModel):
     elements: List[dict] = []
     files: dict = {}
+    client_id: Optional[str] = None
 
 
 # ─────────────────────────── Auth helpers ───────────────────────────
@@ -113,6 +114,119 @@ async def _owned_project(project_id: str, user: dict) -> dict:
     if not proj:
         raise HTTPException(status_code=404, detail="Project not found")
     return proj
+
+
+# ─────────────────────────── Access / sharing model ───────────────────────────
+PUBLIC_EMAIL_DOMAINS = {
+    "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com",
+    "yahoo.com", "yahoo.co.in", "icloud.com", "me.com", "mac.com", "proton.me",
+    "protonmail.com", "pm.me", "aol.com", "msn.com", "gmx.com", "mail.com",
+    "zoho.com", "yandex.com", "hey.com", "fastmail.com",
+}
+ROLE_RANK = {"viewer": 1, "commenter": 2, "editor": 3, "owner": 4}
+VALID_SHARE_ROLES = {"viewer", "commenter", "editor"}
+
+
+def _domain(email):
+    if not email or "@" not in email:
+        return None
+    return email.split("@", 1)[1].lower()
+
+
+def _is_public_domain(dom):
+    return (dom is None) or (dom in PUBLIC_EMAIL_DOMAINS)
+
+
+async def get_current_user_optional(request: Request):
+    return await _user_from_token(_extract_token(request))
+
+
+def _share_token(request: Request):
+    return (request.query_params.get("share")
+            or request.headers.get("x-share-token")
+            or request.headers.get("X-Share-Token"))
+
+
+async def resolve_access(project: dict, user: Optional[dict], share_token: Optional[str] = None):
+    """Highest role the caller has on this project, or None."""
+    if user and user.get("user_id") == project.get("user_id"):
+        return "owner"
+    roles = []
+    email = (user.get("email") or "").lower() if user else None
+    if email:
+        m = await db.project_members.find_one(
+            {"project_id": project["project_id"], "email": email}, {"_id": 0})
+        if m:
+            roles.append(m.get("role", "viewer"))
+    wa = project.get("workspace_access", "none")
+    if user and wa != "none":
+        pdom = project.get("workspace_domain")
+        if pdom and not _is_public_domain(pdom) and _domain(email) == pdom:
+            roles.append(wa)
+    la = project.get("link_access", "none")
+    if share_token and la != "none" and share_token == project.get("share_token"):
+        roles.append(la if user else "viewer")  # anonymous link = view only
+    if not roles:
+        return None
+    return max(roles, key=lambda r: ROLE_RANK.get(r, 0))
+
+
+async def require_access(project_id: str, request: Request, min_role: str = "viewer"):
+    project = await db.projects.find_one({"project_id": project_id}, {"_id": 0})
+    if not project:
+        raise HTTPException(status_code=404, detail="Canvas not found")
+    user = await get_current_user_optional(request)
+    role = await resolve_access(project, user, _share_token(request))
+    if role is None or ROLE_RANK[role] < ROLE_RANK[min_role]:
+        if user is None:
+            raise HTTPException(status_code=401, detail="Sign in required to access this canvas")
+        raise HTTPException(status_code=403, detail="You don't have access to this canvas")
+    return project, role, user
+
+
+def _new_project(user: dict, name: str, description: str = "") -> dict:
+    now = datetime.now(timezone.utc).isoformat()
+    dom = _domain(user.get("email"))
+    return {
+        "project_id": f"proj_{uuid.uuid4().hex[:16]}",
+        "user_id": user["user_id"],
+        "name": name,
+        "description": description or "",
+        "agent_token": f"agt_{uuid.uuid4().hex}",
+        "element_count": 0,
+        "link_access": "none",
+        "workspace_access": "none",
+        "workspace_domain": (None if _is_public_domain(dom) else dom),
+        "share_token": f"shr_{uuid.uuid4().hex}",
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+async def _persist_new_project(project: dict):
+    await db.projects.insert_one(dict(project))
+    await db.scenes.insert_one({"project_id": project["project_id"], "elements": [],
+                                "updated_at": project["created_at"]})
+
+
+def _project_view(p: dict, role: str) -> dict:
+    out = {
+        "project_id": p["project_id"],
+        "name": p.get("name"),
+        "description": p.get("description", ""),
+        "element_count": p.get("element_count", 0),
+        "created_at": p.get("created_at"),
+        "updated_at": p.get("updated_at"),
+        "role": role,
+        "is_owner": role == "owner",
+        "link_access": p.get("link_access", "none"),
+        "workspace_access": p.get("workspace_access", "none"),
+    }
+    if role == "owner":
+        out["agent_token"] = p.get("agent_token")
+        out["share_token"] = p.get("share_token")
+        out["workspace_domain"] = p.get("workspace_domain")
+    return out
 
 
 # ─────────────────────────── Engine helpers ───────────────────────────
@@ -256,31 +370,46 @@ def _public_project(p: dict) -> dict:
 
 @api_router.get("/projects")
 async def list_projects(user: dict = Depends(get_current_user)):
-    cur = db.projects.find({"user_id": user["user_id"]}, {"_id": 0}).sort("updated_at", -1)
-    return [_public_project(p) async for p in cur]
+    uid = user["user_id"]
+    email = (user.get("email") or "").lower()
+    dom = _domain(email)
+    seen = {}
+    async for p in db.projects.find({"user_id": uid}, {"_id": 0}).sort("updated_at", -1):
+        seen[p["project_id"]] = _project_view(p, "owner")
+    async for m in db.project_members.find({"email": email}, {"_id": 0}):
+        pid = m["project_id"]
+        if pid in seen:
+            continue
+        p = await db.projects.find_one({"project_id": pid}, {"_id": 0})
+        if p:
+            role = await resolve_access(p, user)
+            if role:
+                seen[pid] = _project_view(p, role)
+    if dom and not _is_public_domain(dom):
+        async for p in db.projects.find(
+            {"workspace_access": {"$ne": "none"}, "workspace_domain": dom, "user_id": {"$ne": uid}}, {"_id": 0}):
+            pid = p["project_id"]
+            if pid in seen:
+                continue
+            role = await resolve_access(p, user)
+            if role:
+                seen[pid] = _project_view(p, role)
+    items = list(seen.values())
+    items.sort(key=lambda x: (x["is_owner"], x.get("updated_at") or ""), reverse=True)
+    return items
 
 
 @api_router.post("/projects")
 async def create_project(body: ProjectCreate, user: dict = Depends(get_current_user)):
-    now = datetime.now(timezone.utc).isoformat()
-    project = {
-        "project_id": f"proj_{uuid.uuid4().hex[:16]}",
-        "user_id": user["user_id"],
-        "name": body.name,
-        "description": body.description or "",
-        "agent_token": f"agt_{uuid.uuid4().hex}",
-        "element_count": 0,
-        "created_at": now,
-        "updated_at": now,
-    }
-    await db.projects.insert_one(dict(project))
-    await db.scenes.insert_one({"project_id": project["project_id"], "elements": [], "updated_at": now})
-    return _public_project(project)
+    project = _new_project(user, body.name, body.description or "")
+    await _persist_new_project(project)
+    return _project_view(project, "owner")
 
 
 @api_router.get("/projects/{project_id}")
-async def get_project(project_id: str, user: dict = Depends(get_current_user)):
-    return _public_project(await _owned_project(project_id, user))
+async def get_project(project_id: str, request: Request):
+    project, role, _ = await require_access(project_id, request, "viewer")
+    return _project_view(project, role)
 
 
 @api_router.patch("/projects/{project_id}")
@@ -289,7 +418,7 @@ async def update_project(project_id: str, body: ProjectUpdate, user: dict = Depe
     updates = {k: v for k, v in body.model_dump().items() if v is not None}
     updates["updated_at"] = datetime.now(timezone.utc).isoformat()
     await db.projects.update_one({"project_id": project_id}, {"$set": updates})
-    return _public_project(await db.projects.find_one({"project_id": project_id}, {"_id": 0}))
+    return _project_view(await db.projects.find_one({"project_id": project_id}, {"_id": 0}), "owner")
 
 
 @api_router.delete("/projects/{project_id}")
@@ -297,6 +426,7 @@ async def delete_project(project_id: str, user: dict = Depends(get_current_user)
     await _owned_project(project_id, user)
     await db.projects.delete_one({"project_id": project_id})
     await db.scenes.delete_one({"project_id": project_id})
+    await db.project_members.delete_many({"project_id": project_id})
     _hydrated.discard(project_id)
     try:
         await http.delete(f"{ENGINE_URL}/api/canvases/{project_id}", headers=ENGINE_HEADERS)
@@ -313,25 +443,109 @@ async def rotate_token(project_id: str, user: dict = Depends(get_current_user)):
     return {"agent_token": new_token}
 
 
+# ─────────────────────────── Sharing (owner only) ───────────────────────────
+async def _share_state(project_id: str):
+    p = await db.projects.find_one({"project_id": project_id}, {"_id": 0})
+    members = [{"email": m["email"], "role": m["role"]}
+               async for m in db.project_members.find({"project_id": project_id}, {"_id": 0})]
+    dom = p.get("workspace_domain")
+    return {
+        "link_access": p.get("link_access", "none"),
+        "workspace_access": p.get("workspace_access", "none"),
+        "workspace_domain": dom,
+        "workspace_available": bool(dom),
+        "share_token": p.get("share_token"),
+        "members": members,
+    }
+
+
+@api_router.get("/projects/{project_id}/share")
+async def get_share(project_id: str, user: dict = Depends(get_current_user)):
+    await _owned_project(project_id, user)
+    return await _share_state(project_id)
+
+
+@api_router.put("/projects/{project_id}/share")
+async def update_share(project_id: str, body: dict, user: dict = Depends(get_current_user)):
+    p = await _owned_project(project_id, user)
+    updates = {}
+    if body.get("link_access") in ({"none"} | VALID_SHARE_ROLES):
+        updates["link_access"] = body["link_access"]
+    if body.get("workspace_access") in ({"none"} | VALID_SHARE_ROLES):
+        if body["workspace_access"] != "none" and not p.get("workspace_domain"):
+            raise HTTPException(status_code=400, detail="Workspace sharing isn't available for personal email domains")
+        updates["workspace_access"] = body["workspace_access"]
+    if updates:
+        updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+        await db.projects.update_one({"project_id": project_id}, {"$set": updates})
+    return await _share_state(project_id)
+
+
+@api_router.post("/projects/{project_id}/share/rotate-link")
+async def rotate_link(project_id: str, user: dict = Depends(get_current_user)):
+    await _owned_project(project_id, user)
+    tok = f"shr_{uuid.uuid4().hex}"
+    await db.projects.update_one({"project_id": project_id}, {"$set": {"share_token": tok}})
+    return {"share_token": tok}
+
+
+@api_router.post("/projects/{project_id}/members")
+async def add_member(project_id: str, body: dict, user: dict = Depends(get_current_user)):
+    await _owned_project(project_id, user)
+    email = (body.get("email") or "").strip().lower()
+    role = body.get("role", "viewer")
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="A valid email is required")
+    if role not in VALID_SHARE_ROLES:
+        role = "viewer"
+    if email == (user.get("email") or "").lower():
+        raise HTTPException(status_code=400, detail="You already own this canvas")
+    await db.project_members.update_one(
+        {"project_id": project_id, "email": email},
+        {"$set": {"project_id": project_id, "email": email, "role": role,
+                  "invited_by": user["user_id"], "created_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True)
+    return await _share_state(project_id)
+
+
+@api_router.patch("/projects/{project_id}/members")
+async def update_member(project_id: str, body: dict, user: dict = Depends(get_current_user)):
+    await _owned_project(project_id, user)
+    email = (body.get("email") or "").strip().lower()
+    role = body.get("role", "viewer")
+    if role not in VALID_SHARE_ROLES:
+        role = "viewer"
+    await db.project_members.update_one({"project_id": project_id, "email": email}, {"$set": {"role": role}})
+    return await _share_state(project_id)
+
+
+@api_router.delete("/projects/{project_id}/members")
+async def remove_member(project_id: str, email: str, user: dict = Depends(get_current_user)):
+    await _owned_project(project_id, user)
+    await db.project_members.delete_one({"project_id": project_id, "email": email.strip().lower()})
+    return await _share_state(project_id)
+
+
 # ─────────────────────────── Scene routes ───────────────────────────
 @api_router.get("/projects/{project_id}/scene")
-async def get_scene(project_id: str, user: dict = Depends(get_current_user)):
-    await _owned_project(project_id, user)
+async def get_scene(project_id: str, request: Request):
+    await require_access(project_id, request, "viewer")
     await ensure_hydrated(project_id)
     r = await http.get(f"{ENGINE_URL}/api/elements", params={"canvasId": project_id}, headers=ENGINE_HEADERS)
     return r.json()
 
 
 @api_router.put("/projects/{project_id}/scene")
-async def put_scene(project_id: str, body: ScenePut, user: dict = Depends(get_current_user)):
-    await _owned_project(project_id, user)
-    _hydrated.add(project_id)
+async def put_scene(project_id: str, body: ScenePut, request: Request):
+    await require_access(project_id, request, "editor")
     await http.post(
         f"{ENGINE_URL}/api/elements/sync",
         params={"canvasId": project_id},
-        json={"elements": body.elements, "timestamp": datetime.now(timezone.utc).isoformat()},
+        json={"elements": body.elements, "timestamp": datetime.now(timezone.utc).isoformat(),
+              "clientId": body.client_id},
         headers=ENGINE_HEADERS,
     )
+    _hydrated.add(project_id)
     await db.scenes.update_one(
         {"project_id": project_id},
         {"$set": {"project_id": project_id, "elements": body.elements,
@@ -346,9 +560,9 @@ async def put_scene(project_id: str, body: ScenePut, user: dict = Depends(get_cu
 
 
 @api_router.post("/projects/{project_id}/simulate")
-async def simulate_ai_draw(project_id: str, user: dict = Depends(get_current_user)):
+async def simulate_ai_draw(project_id: str, request: Request):
     """Draw a small demo diagram on the canvas (lets users see live sync without an external agent)."""
-    await _owned_project(project_id, user)
+    await require_access(project_id, request, "editor")
     await ensure_hydrated(project_id)
     demo = [
         {"type": "rectangle", "x": 120, "y": 120, "width": 200, "height": 90,
@@ -433,40 +647,51 @@ async def user_mcp_proxy(user_token: str, path: str, request: Request):
     uid = user["user_id"]
     method = request.method
 
-    # ---- Canvas management, mapped onto the user's projects ----
+    # ---- Canvas management, mapped onto the user's projects (owned + shared) ----
     if path == "canvases":
         if method == "GET":
-            cur = db.projects.find({"user_id": uid}, {"_id": 0}).sort("updated_at", -1)
-            items = [_canvas_shape(p) async for p in cur]
+            email = (user.get("email") or "").lower()
+            seen = {}
+            async for p in db.projects.find({"user_id": uid}, {"_id": 0}).sort("updated_at", -1):
+                seen[p["project_id"]] = _canvas_shape(p)
+            async for m in db.project_members.find({"email": email, "role": "editor"}, {"_id": 0}):
+                p = await db.projects.find_one({"project_id": m["project_id"]}, {"_id": 0})
+                if p and p["project_id"] not in seen:
+                    seen[p["project_id"]] = _canvas_shape(p)
+            dom = _domain(email)
+            if dom and not _is_public_domain(dom):
+                async for p in db.projects.find(
+                    {"workspace_access": "editor", "workspace_domain": dom, "user_id": {"$ne": uid}}, {"_id": 0}):
+                    if p["project_id"] not in seen:
+                        seen[p["project_id"]] = _canvas_shape(p)
+            items = list(seen.values())
             return {"success": True, "canvases": items, "count": len(items)}
         if method == "POST":
             try:
                 body = await request.json()
             except Exception:
                 body = {}
-            name = (body or {}).get("name") or "Untitled canvas"
-            now = datetime.now(timezone.utc).isoformat()
-            project = {
-                "project_id": f"proj_{uuid.uuid4().hex[:16]}",
-                "user_id": uid, "name": name, "description": "",
-                "agent_token": f"agt_{uuid.uuid4().hex}", "element_count": 0,
-                "created_at": now, "updated_at": now,
-            }
-            await db.projects.insert_one(dict(project))
-            await db.scenes.insert_one({"project_id": project["project_id"], "elements": [], "updated_at": now})
+            project = _new_project(user, (body or {}).get("name") or "Untitled canvas")
+            await _persist_new_project(project)
             return {"success": True, "canvas": _canvas_shape(project)}
         raise HTTPException(status_code=405, detail="Method not allowed")
 
     if path.startswith("canvases/"):
         cid = path.split("/", 1)[1]
-        proj = await db.projects.find_one({"project_id": cid, "user_id": uid}, {"_id": 0})
+        proj = await db.projects.find_one({"project_id": cid}, {"_id": 0})
         if not proj:
             raise HTTPException(status_code=404, detail="Canvas not found")
+        role = await resolve_access(proj, user)
+        if not role:
+            raise HTTPException(status_code=403, detail="You don't have access to this canvas")
         if method == "GET":
             return {"success": True, "canvas": _canvas_shape(proj)}
         if method == "DELETE":
+            if role != "owner":
+                raise HTTPException(status_code=403, detail="Only the owner can delete this canvas")
             await db.projects.delete_one({"project_id": cid})
             await db.scenes.delete_one({"project_id": cid})
+            await db.project_members.delete_many({"project_id": cid})
             _hydrated.discard(cid)
             try:
                 await http.delete(f"{ENGINE_URL}/api/canvases/{cid}", headers=ENGINE_HEADERS)
@@ -475,7 +700,7 @@ async def user_mcp_proxy(user_token: str, path: str, request: Request):
             return {"success": True, "message": f"Canvas {cid} deleted"}
         raise HTTPException(status_code=405, detail="Method not allowed")
 
-    # ---- Element / scene / export ops: require an owned canvasId ----
+    # ---- Element / scene / export ops: require editor access to the canvasId ----
     params = dict(request.query_params)
     canvas_id = params.pop("canvasId", None)
     if not canvas_id or canvas_id == "default":
@@ -483,16 +708,18 @@ async def user_mcp_proxy(user_token: str, path: str, request: Request):
             status_code=400,
             detail="No active canvas. Call create_canvas or set_active_canvas (to a canvas id from list_canvases) first.",
         )
-    proj = await db.projects.find_one({"project_id": canvas_id, "user_id": uid}, {"_id": 0})
+    proj = await db.projects.find_one({"project_id": canvas_id}, {"_id": 0})
     if not proj:
-        exists = await db.projects.find_one({"project_id": canvas_id}, {"_id": 0})
-        if exists:
-            raise HTTPException(status_code=403, detail="You do not own this canvas")
         raise HTTPException(
             status_code=404,
             detail=(f"Canvas '{canvas_id}' not found — it may have been deleted. "
                     "Call list_canvases and set_active_canvas to pick a valid canvas, or create_canvas."),
         )
+    role = await resolve_access(proj, user)
+    if not role:
+        raise HTTPException(status_code=403, detail="You do not have access to this canvas")
+    if method in ("POST", "PUT", "DELETE") and ROLE_RANK[role] < ROLE_RANK["editor"]:
+        raise HTTPException(status_code=403, detail="You have view-only access to this canvas")
 
     await ensure_hydrated(canvas_id)
     params["canvasId"] = canvas_id
@@ -517,19 +744,20 @@ async def user_mcp_proxy(user_token: str, path: str, request: Request):
 # ─────────────────────────── WebSocket proxy ───────────────────────────
 @app.websocket("/api/ws/canvas/{project_id}")
 async def ws_canvas(websocket: WebSocket, project_id: str):
-    # Auth: browser sends session_token cookie; external clients may pass ?token=
+    # Auth: session cookie / ?token= (session or agent), and ?share= link token.
     token = websocket.cookies.get("session_token") or websocket.query_params.get("token")
-    authorized = False
-    if token:
-        user = await _user_from_token(token)
-        if user:
-            proj = await db.projects.find_one(
-                {"project_id": project_id, "user_id": user["user_id"]}, {"_id": 0})
-            authorized = proj is not None
-        if not authorized:
-            proj = await db.projects.find_one({"agent_token": token, "project_id": project_id}, {"_id": 0})
-            authorized = proj is not None
-    if not authorized:
+    share = websocket.query_params.get("share")
+    project = await db.projects.find_one({"project_id": project_id}, {"_id": 0})
+    if not project:
+        await websocket.close(code=4404)
+        return
+    user = await _user_from_token(token) if token else None
+    role = await resolve_access(project, user, share)
+    if role is None and token:
+        atproj = await db.projects.find_one({"agent_token": token, "project_id": project_id}, {"_id": 0})
+        if atproj:
+            role = "editor"
+    if role is None:
         await websocket.close(code=4401)
         return
 

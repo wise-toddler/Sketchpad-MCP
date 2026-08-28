@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { Excalidraw, convertToExcalidrawElements } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
-import { WS_BASE } from "@/lib/apiClient";
+import { WS_BASE, getShareToken } from "@/lib/apiClient";
 import apiClient from "@/lib/apiClient";
 import { useTheme } from "@/context/ThemeContext";
 
-const AUTO_SYNC_MS = 1200;
+const AUTO_SYNC_MS = 500;
+const POINTER_MS = 90;
 
 const stripServerMeta = (el) => {
   const { createdAt, updatedAt, version, syncedAt, source, syncTimestamp, ...rest } = el;
@@ -58,23 +59,25 @@ const convertScene = (elements) => {
   return [...converted, ...images];
 };
 
-export default function ExcalidrawCanvasView({ projectId, apiRef, onConnectionChange }) {
+export default function ExcalidrawCanvasView({ projectId, apiRef, onConnectionChange, canEdit = true, userName = "Guest" }) {
   const { theme } = useTheme();
-  const [excalidrawAPI, setExcalidrawAPI] = useState(null);
+  const [, setExcalidrawAPI] = useState(null);
   const apiInstance = useRef(null);
+  const clientIdRef = useRef(Math.random().toString(36).slice(2));
+  const myColorRef = useRef(`hsl(${Math.floor(Math.random() * 360)} 80% 60%)`);
   const wsRef = useRef(null);
   const suppressRef = useRef(0);
   const userInteractedRef = useRef(false);
   const syncTimerRef = useRef(null);
+  const lastPointerRef = useRef(0);
+  const collaboratorsRef = useRef(new Map());
 
   const applyRemote = useCallback((elements) => {
     const api = apiInstance.current;
     if (!api) return;
     suppressRef.current += 1;
     api.updateScene({ elements });
-    setTimeout(() => {
-      suppressRef.current = Math.max(0, suppressRef.current - 1);
-    }, 0);
+    setTimeout(() => { suppressRef.current = Math.max(0, suppressRef.current - 1); }, 0);
   }, []);
 
   const mergeAndApply = useCallback((incoming) => {
@@ -101,18 +104,21 @@ export default function ExcalidrawCanvasView({ projectId, apiRef, onConnectionCh
         if (data.files) api.addFiles(Object.values(data.files));
         break;
       case "element_created":
-        if (data.element) mergeAndApply([stripServerMeta(data.element)]);
-        break;
       case "element_updated":
         if (data.element) mergeAndApply([stripServerMeta(data.element)]);
         break;
       case "elements_batch_created":
         if (data.elements) mergeAndApply(data.elements.map(stripServerMeta));
         break;
+      case "elements_synced":
+        // Co-editing: another editor pushed the full scene. Replace (ignore our own echo).
+        if (data.clientId !== clientIdRef.current && Array.isArray(data.elements)) {
+          applyRemote(convertScene(data.elements.map(stripServerMeta)));
+        }
+        break;
       case "element_deleted":
         if (data.elementId) {
-          const filtered = api.getSceneElements().filter((el) => el.id !== data.elementId);
-          applyRemote(filtered);
+          applyRemote(api.getSceneElements().filter((el) => el.id !== data.elementId));
         }
         break;
       case "canvas_cleared":
@@ -121,21 +127,35 @@ export default function ExcalidrawCanvasView({ projectId, apiRef, onConnectionCh
       case "files_added":
         if (Array.isArray(data.files)) api.addFiles(data.files);
         break;
+      case "pointer": {
+        // Live collaborator cursors.
+        if (data.clientId === clientIdRef.current) break;
+        collaboratorsRef.current.set(data.clientId, {
+          username: data.name || "Guest",
+          pointer: { x: data.x, y: data.y },
+          color: { background: data.color || "#6366f1", stroke: data.color || "#6366f1" },
+        });
+        try { api.updateScene({ collaborators: new Map(collaboratorsRef.current) }); } catch (_) {}
+        break;
+      }
+      case "presence_leave":
+        collaboratorsRef.current.delete(data.clientId);
+        try { api.updateScene({ collaborators: new Map(collaboratorsRef.current) }); } catch (_) {}
+        break;
       default:
         break;
     }
   }, [applyRemote, mergeAndApply]);
 
-  // WebSocket lifecycle
   useEffect(() => {
     let closed = false;
+    const share = getShareToken();
     const connect = () => {
-      const ws = new WebSocket(`${WS_BASE}/canvas/${projectId}`);
+      const qs = share ? `?share=${encodeURIComponent(share)}` : "";
+      const ws = new WebSocket(`${WS_BASE}/canvas/${projectId}${qs}`);
       wsRef.current = ws;
       ws.onopen = () => onConnectionChange?.(true);
-      ws.onmessage = (e) => {
-        try { handleMessage(JSON.parse(e.data)); } catch (_) { /* ignore */ }
-      };
+      ws.onmessage = (e) => { try { handleMessage(JSON.parse(e.data)); } catch (_) {} };
       ws.onclose = () => {
         onConnectionChange?.(false);
         if (!closed) setTimeout(connect, 3000);
@@ -145,27 +165,41 @@ export default function ExcalidrawCanvasView({ projectId, apiRef, onConnectionCh
     connect();
     return () => {
       closed = true;
+      try { wsRef.current?.send(JSON.stringify({ type: "presence_leave", clientId: clientIdRef.current })); } catch (_) {}
       wsRef.current?.close();
     };
   }, [projectId, handleMessage, onConnectionChange]);
 
   const persist = useCallback(async () => {
     const api = apiInstance.current;
-    if (!api) return;
+    if (!api || !canEdit) return;
     const elements = api.getSceneElements().filter((el) => !el.isDeleted);
     try {
-      await apiClient.put(`/projects/${projectId}/scene`, { elements, files: {} });
-    } catch (_) { /* ignore */ }
-  }, [projectId]);
+      await apiClient.put(`/projects/${projectId}/scene`, { elements, files: {}, client_id: clientIdRef.current });
+    } catch (_) {}
+  }, [projectId, canEdit]);
 
   const scheduleSync = useCallback(() => {
-    if (!userInteractedRef.current || suppressRef.current > 0) return;
+    if (!canEdit || !userInteractedRef.current || suppressRef.current > 0) return;
     if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
     syncTimerRef.current = setTimeout(() => {
       syncTimerRef.current = null;
       if (suppressRef.current === 0) persist();
     }, AUTO_SYNC_MS);
-  }, [persist]);
+  }, [persist, canEdit]);
+
+  const onPointerUpdate = useCallback((payload) => {
+    const now = Date.now();
+    if (now - lastPointerRef.current < POINTER_MS) return;
+    lastPointerRef.current = now;
+    const ws = wsRef.current;
+    const p = payload?.pointer;
+    if (ws && ws.readyState === 1 && p) {
+      try {
+        ws.send(JSON.stringify({ type: "pointer", clientId: clientIdRef.current, name: userName, color: myColorRef.current, x: p.x, y: p.y }));
+      } catch (_) {}
+    }
+  }, [userName]);
 
   return (
     <div
@@ -176,12 +210,14 @@ export default function ExcalidrawCanvasView({ projectId, apiRef, onConnectionCh
     >
       <Excalidraw
         theme={theme}
+        viewModeEnabled={!canEdit}
         excalidrawAPI={(api) => {
           apiInstance.current = api;
           setExcalidrawAPI(api);
           if (apiRef) apiRef.current = api;
         }}
         onChange={scheduleSync}
+        onPointerUpdate={onPointerUpdate}
       />
     </div>
   );

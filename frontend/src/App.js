@@ -28,6 +28,15 @@ function RootRoute() {
   return <Login />;
 }
 
+function CanvasGuard() {
+  const { user, loading } = useAuth();
+  const location = useLocation();
+  const hasShare = new URLSearchParams(location.search).get("share");
+  if (loading) return <FullLoader />;
+  if (!user && !hasShare) return <Navigate to="/" replace />;
+  return <CanvasPage />;
+}
+
 function AppRouter() {
   const location = useLocation();
   // Process OAuth callback fragment FIRST (synchronously) to avoid race conditions.
@@ -36,7 +45,7 @@ function AppRouter() {
     <Routes>
       <Route path="/" element={<RootRoute />} />
       <Route path="/dashboard" element={<Protected><Dashboard /></Protected>} />
-      <Route path="/canvas/:projectId" element={<Protected><CanvasPage /></Protected>} />
+      <Route path="/canvas/:projectId" element={<CanvasGuard />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

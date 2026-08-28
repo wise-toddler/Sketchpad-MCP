@@ -52,7 +52,34 @@ AI Agent ──┤─► FastAPI gateway (auth, projects, persistence, proxy) �
 - Engine: vitest 105/105 (96 original + 9 new Phase-1 regression tests).
 - Frontend: screenshots confirm login, dashboard, and live canvas with agent-drawn shapes.
 
-## Backlog (prioritized)
+## Implemented — Notion-style sharing + real-time co-editing (2026-08)
+- **Phase 1 — Notion-style sharing (tested: 16/16 backend + 12/12 UI, iteration_4):**
+  - Backend `resolve_access()` composes highest role across owner | member (email invite) |
+    workspace-domain | link, with anonymous link capped to viewer.
+  - Share endpoints: GET/PUT `/projects/{id}/share`, POST/PATCH/DELETE `/projects/{id}/members`,
+    POST `/projects/{id}/share/rotate-link`. Owner-only; `_project_view` hides owner-only fields
+    (agent_token/share_token/workspace_domain) from shared users.
+  - `GET /projects` returns owned + members-by-email + same-workspace-domain projects with `role`/`is_owner`.
+  - Frontend: `Dashboard.js` split into "owned" grid + "Shared with me" section with `ProjectCard`
+    + `RoleBadge` (KISS: Viewer/Editor only — Commenter removed from ShareDialog).
+  - `ShareDialog.js`: invite by email, general access (link viewer/editor + copy/rotate),
+    workspace-domain access (non-public domains only). `CanvasPage` wires ShareDialog + share button.
+  - Anonymous `/canvas/{id}?share={token}` viewer link → read-only view; `link_access='none'` denied.
+- **Phase 2 — Real-time co-editing (tested: 7/7 backend co-edit + 2-context E2E, iteration_5):**
+  - Editor `PUT /projects/{id}/scene` (editor role required) → engine `/api/elements/sync` →
+    broadcasts `elements_synced {elements, clientId}` to same-canvas peers. Last-writer-wins
+    (full-scene replace on the 500ms debounce window — accepted KISS trade-off).
+  - Live presence: engine WS relays `pointer`/`presence_leave` to other same-canvas clients →
+    Excalidraw collaborator cursors. Own echo suppressed via per-mount `clientIdRef`.
+  - Viewer/anonymous = `viewModeEnabled` (read-only) but still receive live updates.
+  - Fixes: per-mount CLIENT_ID (two-tab collision), `_hydrated.add` moved after successful sync.
+
+## Notes / accepted trade-offs
+- Co-editing is full-scene last-writer-wins (no CRDT). Simultaneous edits within the 500ms debounce
+  window can clobber; fine for turn-taking multiplayer, documented as KISS scope.
+- `GET /projects/{id}` now returns 403 for authenticated non-members (was 404) to support sharing.
+
+
 - P1: In-app AI Assistant (LLM-driven drawing chat) — user deferred, LLM TBD.
 - P1: excalidraw.com export button in UI (currently MCP-tool only) + optional object storage for
   thumbnails/shareable image links.

@@ -517,13 +517,15 @@ router.post('/api/elements/sync', (req: Request, res: Response) => {
 
     logger.info(`Sync completed: ${successCount}/${frontendElements.length} elements synced`);
 
-    // 3. Broadcast sync event to WebSocket clients on this canvas
+    // 3. Broadcast sync event (with elements) so OTHER editors update live.
     broadcastToCanvas(canvasId, {
       type: 'elements_synced',
       count: successCount,
+      elements: processedElements,
+      clientId: req.body.clientId,
       timestamp: new Date().toISOString(),
       source: 'manual_sync'
-    });
+    } as any);
 
     // 4. Return sync results
     res.json({

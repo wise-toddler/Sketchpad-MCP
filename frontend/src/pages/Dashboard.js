@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  Plus, PenTool, LogOut, MoreVertical, Trash2, Pencil, Layers, Bot, Search,
+  Plus, PenTool, LogOut, MoreVertical, Trash2, Pencil, Layers, Bot, Search, Users,
 } from "lucide-react";
 import { toast } from "sonner";
 import apiClient from "@/lib/apiClient";
 import { useAuth } from "@/context/AuthContext";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -83,6 +84,8 @@ export default function Dashboard() {
   };
 
   const filtered = projects.filter((p) => p.name.toLowerCase().includes(query.toLowerCase()));
+  const owned = filtered.filter((p) => p.is_owner);
+  const shared = filtered.filter((p) => !p.is_owner);
 
   return (
     <div className="min-h-screen blueprint-grid" data-testid="dashboard-container">
@@ -161,61 +164,32 @@ export default function Dashboard() {
             )}
           </div>
         ) : (
-          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
-            {filtered.map((p, i) => (
-              <div
-                key={p.project_id}
-                data-testid="project-card-item"
-                className="group rounded-2xl border border-border/70 bg-card/60 overflow-hidden hover:border-primary/50 transition-all fade-up cursor-pointer"
-                style={{ animationDelay: `${i * 50}ms` }}
-                onClick={() => navigate(`/canvas/${p.project_id}`)}
-              >
-                <div className="h-32 relative blueprint-grid border-b border-border/60 flex items-center justify-center">
-                  <div className="absolute top-3 right-3 z-10" onClick={(e) => e.stopPropagation()}>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <button
-                          data-testid="project-menu-trigger"
-                          className="w-8 h-8 rounded-lg glass-panel border border-border/60 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-                        >
-                          <MoreVertical className="w-4 h-4" />
-                        </button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem
-                          data-testid="rename-project-btn"
-                          onClick={() => { setRenameTarget(p); setRenameValue(p.name); }}
-                        >
-                          <Pencil className="w-4 h-4 mr-2" /> Rename
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          data-testid="delete-project-btn"
-                          className="text-destructive focus:text-destructive"
-                          onClick={() => deleteProject(p)}
-                        >
-                          <Trash2 className="w-4 h-4 mr-2" /> Delete
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                  <PenTool className="w-10 h-10 text-primary/40 group-hover:text-primary/70 transition-colors" />
+          <div className="space-y-10">
+            {owned.length > 0 && (
+              <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
+                {owned.map((p, i) => (
+                  <ProjectCard key={p.project_id} p={p} i={i}
+                    onOpen={() => navigate(`/canvas/${p.project_id}`)}
+                    onRename={() => { setRenameTarget(p); setRenameValue(p.name); }}
+                    onDelete={() => deleteProject(p)} />
+                ))}
+              </div>
+            )}
+            {shared.length > 0 && (
+              <div data-testid="shared-with-me-section">
+                <div className="flex items-center gap-2 mb-4">
+                  <Users className="w-4 h-4 text-muted-foreground" />
+                  <h2 className="font-heading font-semibold text-lg">Shared with me</h2>
+                  <span className="text-sm text-muted-foreground">({shared.length})</span>
                 </div>
-                <div className="p-4">
-                  <h3 className="font-heading font-semibold text-base truncate">{p.name}</h3>
-                  <p className="text-sm text-muted-foreground truncate mt-0.5 min-h-[1.25rem]">
-                    {p.description || "No description"}
-                  </p>
-                  <div className="flex items-center gap-3 mt-3">
-                    <span className="font-mono text-[11px] text-muted-foreground flex items-center gap-1">
-                      <Layers className="w-3 h-3" /> {p.element_count} elements
-                    </span>
-                    <span className="font-mono text-[11px] text-emerald-400/80 flex items-center gap-1">
-                      <Bot className="w-3 h-3" /> MCP ready
-                    </span>
-                  </div>
+                <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
+                  {shared.map((p, i) => (
+                    <ProjectCard key={p.project_id} p={p} i={i}
+                      onOpen={() => navigate(`/canvas/${p.project_id}`)} />
+                  ))}
                 </div>
               </div>
-            ))}
+            )}
           </div>
         )}
       </main>
@@ -275,6 +249,83 @@ export default function Dashboard() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+function RoleBadge({ role }) {
+  if (!role || role === "owner") return null;
+  const label = role === "editor" ? "Editor" : "Viewer";
+  return (
+    <Badge
+      data-testid="role-badge"
+      variant="secondary"
+      className="font-mono text-[10px] uppercase tracking-wider"
+    >
+      {label}
+    </Badge>
+  );
+}
+
+function ProjectCard({ p, i, onOpen, onRename, onDelete }) {
+  const isOwner = p.is_owner;
+  return (
+    <div
+      data-testid="project-card-item"
+      className="group rounded-2xl border border-border/70 bg-card/60 overflow-hidden hover:border-primary/50 transition-all fade-up cursor-pointer"
+      style={{ animationDelay: `${i * 50}ms` }}
+      onClick={onOpen}
+    >
+      <div className="h-32 relative blueprint-grid border-b border-border/60 flex items-center justify-center">
+        {isOwner && (
+          <div className="absolute top-3 right-3 z-10" onClick={(e) => e.stopPropagation()}>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  data-testid="project-menu-trigger"
+                  className="w-8 h-8 rounded-lg glass-panel border border-border/60 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                >
+                  <MoreVertical className="w-4 h-4" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem data-testid="rename-project-btn" onClick={onRename}>
+                  <Pencil className="w-4 h-4 mr-2" /> Rename
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  data-testid="delete-project-btn"
+                  className="text-destructive focus:text-destructive"
+                  onClick={onDelete}
+                >
+                  <Trash2 className="w-4 h-4 mr-2" /> Delete
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        )}
+        {!isOwner && (
+          <div className="absolute top-3 right-3 z-10">
+            <RoleBadge role={p.role} />
+          </div>
+        )}
+        <PenTool className="w-10 h-10 text-primary/40 group-hover:text-primary/70 transition-colors" />
+      </div>
+      <div className="p-4">
+        <h3 className="font-heading font-semibold text-base truncate">{p.name}</h3>
+        <p className="text-sm text-muted-foreground truncate mt-0.5 min-h-[1.25rem]">
+          {p.description || "No description"}
+        </p>
+        <div className="flex items-center gap-3 mt-3">
+          <span className="font-mono text-[11px] text-muted-foreground flex items-center gap-1">
+            <Layers className="w-3 h-3" /> {p.element_count} elements
+          </span>
+          {isOwner && (
+            <span className="font-mono text-[11px] text-emerald-400/80 flex items-center gap-1">
+              <Bot className="w-3 h-3" /> MCP ready
+            </span>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
