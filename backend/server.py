@@ -374,20 +374,18 @@ async def list_projects(user: dict = Depends(get_current_user)):
     email = (user.get("email") or "").lower()
     dom = _domain(email)
     seen = {}
-    async for p in db.projects.find({"user_id": uid}, {"_id": 0}).sort("updated_at", -1):
+    async for p in db.projects.find({"user_id": uid}, {"_id": 0}).sort("updated_at", -1).limit(200):
         seen[p["project_id"]] = _project_view(p, "owner")
-    async for m in db.project_members.find({"email": email}, {"_id": 0}):
-        pid = m["project_id"]
-        if pid in seen:
-            continue
-        p = await db.projects.find_one({"project_id": pid}, {"_id": 0})
-        if p:
+    member_ids = [m["project_id"] async for m in db.project_members.find({"email": email}, {"_id": 0}).limit(500)]
+    missing_ids = [pid for pid in member_ids if pid not in seen]
+    if missing_ids:
+        async for p in db.projects.find({"project_id": {"$in": missing_ids}}, {"_id": 0}):
             role = await resolve_access(p, user)
             if role:
-                seen[pid] = _project_view(p, role)
+                seen[p["project_id"]] = _project_view(p, role)
     if dom and not _is_public_domain(dom):
         async for p in db.projects.find(
-            {"workspace_access": {"$ne": "none"}, "workspace_domain": dom, "user_id": {"$ne": uid}}, {"_id": 0}):
+            {"workspace_access": {"$ne": "none"}, "workspace_domain": dom, "user_id": {"$ne": uid}}, {"_id": 0}).limit(500):
             pid = p["project_id"]
             if pid in seen:
                 continue
@@ -652,16 +650,17 @@ async def user_mcp_proxy(user_token: str, path: str, request: Request):
         if method == "GET":
             email = (user.get("email") or "").lower()
             seen = {}
-            async for p in db.projects.find({"user_id": uid}, {"_id": 0}).sort("updated_at", -1):
+            async for p in db.projects.find({"user_id": uid}, {"_id": 0}).sort("updated_at", -1).limit(200):
                 seen[p["project_id"]] = _canvas_shape(p)
-            async for m in db.project_members.find({"email": email, "role": "editor"}, {"_id": 0}):
-                p = await db.projects.find_one({"project_id": m["project_id"]}, {"_id": 0})
-                if p and p["project_id"] not in seen:
+            member_ids = [m["project_id"] async for m in db.project_members.find({"email": email, "role": "editor"}, {"_id": 0}).limit(500)]
+            missing_ids = [pid for pid in member_ids if pid not in seen]
+            if missing_ids:
+                async for p in db.projects.find({"project_id": {"$in": missing_ids}}, {"_id": 0}):
                     seen[p["project_id"]] = _canvas_shape(p)
             dom = _domain(email)
             if dom and not _is_public_domain(dom):
                 async for p in db.projects.find(
-                    {"workspace_access": "editor", "workspace_domain": dom, "user_id": {"$ne": uid}}, {"_id": 0}):
+                    {"workspace_access": "editor", "workspace_domain": dom, "user_id": {"$ne": uid}}, {"_id": 0}).limit(500):
                     if p["project_id"] not in seen:
                         seen[p["project_id"]] = _canvas_shape(p)
             items = list(seen.values())
