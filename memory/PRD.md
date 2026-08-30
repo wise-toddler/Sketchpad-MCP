@@ -74,6 +74,17 @@ AI Agent ──┤─► FastAPI gateway (auth, projects, persistence, proxy) �
   - Viewer/anonymous = `viewModeEnabled` (read-only) but still receive live updates.
   - Fixes: per-mount CLIENT_ID (two-tab collision), `_hydrated.add` moved after successful sync.
 
+## Post-login redirect to shared canvas (2026-08)
+- Bug: opening an editor share link while signed out and logging in always dumped the user on
+  `/dashboard`, losing the invited canvas. Also no sign-in CTA existed on shared canvases.
+- Fix: `lib/authRedirect.js` (`startLogin(returnTo)` stores intended path in localStorage;
+  `consumePostLoginRedirect()` reads+clears it). `Login.js` + new `CanvasPage` "Sign in to edit"
+  button (anon only, data-testid=`canvas-signin-btn`) use it; `AuthCallback` redirects to the
+  remembered path after establishing the session. Signed-in users via an editor link get editor
+  role (resolve_access), anonymous capped to viewer.
+- Verified: sign-in CTA renders for anon on shared canvas, anon role = "View only", click fires
+  OAuth redirect. Full OAuth completion not automatable (no scriptable password).
+
 ## Notes / accepted trade-offs
 - Co-editing is full-scene last-writer-wins (no CRDT). Simultaneous edits within the 500ms debounce
   window can clobber; fine for turn-taking multiplayer, documented as KISS scope.

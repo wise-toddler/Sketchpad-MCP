@@ -1,12 +1,9 @@
 import { PenTool, Zap, Bot, Lock, GitBranch } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { startLogin } from "@/lib/authRedirect";
 
 export default function Login() {
-  const handleGoogleLogin = () => {
-    // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
-    const redirectUrl = window.location.origin + "/dashboard";
-    window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
-  };
+  const handleGoogleLogin = () => startLogin();
 
   const features = [
     { icon: Bot, title: "AI-Native Canvas", desc: "MCP agents draw, connect and iterate on live diagrams." },

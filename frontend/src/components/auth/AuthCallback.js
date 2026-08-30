@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import apiClient from "@/lib/apiClient";
 import { useAuth } from "@/context/AuthContext";
+import { consumePostLoginRedirect } from "@/lib/authRedirect";
 
 // Handles the #session_id=... fragment returned by Emergent Google Auth.
 export default function AuthCallback() {
@@ -25,8 +26,9 @@ export default function AuthCallback() {
       try {
         const res = await apiClient.post("/auth/session", { session_id: sessionId });
         setUser(res.data.user);
-        window.history.replaceState(null, "", "/dashboard");
-        navigate("/dashboard", { replace: true, state: { user: res.data.user } });
+        const dest = consumePostLoginRedirect() || "/dashboard";
+        window.history.replaceState(null, "", dest);
+        navigate(dest, { replace: true, state: { user: res.data.user } });
       } catch (e) {
         navigate("/", { replace: true });
       }

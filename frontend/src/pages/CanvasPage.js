@@ -1,9 +1,10 @@
 import { useEffect, useState, useRef } from "react";
-import { useParams, useNavigate } from "react-router-dom";
-import { ArrowLeft, Download, ChevronDown, Bot, Loader2, ImageIcon, FileCode, FileJson, Share2, Eye } from "lucide-react";
+import { useParams, useNavigate, useLocation } from "react-router-dom";
+import { ArrowLeft, Download, ChevronDown, Bot, Loader2, ImageIcon, FileCode, FileJson, Share2, Eye, LogIn } from "lucide-react";
 import { toast } from "sonner";
 import apiClient from "@/lib/apiClient";
 import { useAuth } from "@/context/AuthContext";
+import { startLogin } from "@/lib/authRedirect";
 import ExcalidrawCanvasView from "@/components/canvas/ExcalidrawCanvasView";
 import McpAgentConnectPanel from "@/components/canvas/McpAgentConnectPanel";
 import ShareDialog from "@/components/canvas/ShareDialog";
@@ -19,6 +20,7 @@ const ROLE_RANK = { viewer: 1, commenter: 2, editor: 3, owner: 4 };
 export default function CanvasPage() {
   const { projectId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const { user } = useAuth();
   const [project, setProject] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -95,6 +97,15 @@ export default function CanvasPage() {
 
         <div className="flex items-center gap-2">
           <ThemeToggle />
+          {!user && (
+            <button
+              onClick={() => startLogin(location.pathname + location.search)}
+              data-testid="canvas-signin-btn"
+              className="h-9 px-3 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 flex items-center gap-2 text-sm font-semibold shadow-lg shadow-primary/25"
+            >
+              <LogIn className="w-4 h-4" /> Sign in to edit
+            </button>
+          )}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button data-testid="canvas-export-dropdown" className="h-9 px-3 rounded-lg border border-border hover:bg-accent flex items-center gap-2 text-sm font-medium">
