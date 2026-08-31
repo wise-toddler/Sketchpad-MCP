@@ -91,3 +91,16 @@ frontend/node_modules/.cache/default-development/2.pack
 credentials.json
 *.key
 .credentials
+
+# ...but keep the example templates in the repo
+!.env.example
+!**/.env.example
+
+# Internal dev / agent artifacts (not for the public repo)
+.emergent/
+.gitconfig
+memory/
+test_reports/
+test_result.md
+auth_testing.md
+design_guidelines.json

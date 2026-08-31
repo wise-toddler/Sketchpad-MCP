@@ -1,0 +1,56 @@
+Sketchpad MCP
+Copyright (c) 2026 Sketchpad MCP contributors
+
+This product is licensed under the MIT License (see LICENSE).
+
+It includes and/or builds upon the following third-party open-source software.
+All are used under permissive licenses; their copyright notices are retained
+below as required.
+
+================================================================================
+1. mcp_excalidraw  (canvas + MCP engine — `engine/` is derived from this)
+================================================================================
+Copyright (c) 2024 yctimlin (MCP Excalidraw Server)
+Source:  https://github.com/yctimlin/mcp_excalidraw
+License: MIT
+
+The `engine/` directory is a modified fork of this project. Changes include a
+shared-secret gateway middleware, per-user canvas isolation, additional MCP
+tools, real-time co-editing broadcast events, and Phase-1 bug fixes. The
+original MIT license text is preserved at `engine/LICENSE`.
+
+================================================================================
+2. Excalidraw  (embedded canvas — @excalidraw/excalidraw)
+================================================================================
+Copyright (c) 2020 Excalidraw
+Source:  https://github.com/excalidraw/excalidraw
+License: MIT
+
+The "Excalifont" typeface shipped with Excalidraw is licensed under the
+SIL Open Font License 1.1 (OFL-1.1).
+
+Sketchpad MCP is NOT affiliated with, sponsored by, or endorsed by Excalidraw.
+The name "Excalidraw" is used solely to describe interoperability with the
+open-source Excalidraw project.
+
+================================================================================
+3. Other notable dependencies
+================================================================================
+The application also depends on many open-source packages under permissive
+licenses (MIT / ISC / BSD / Apache-2.0), including but not limited to:
+
+  Frontend : React, React Router, @excalidraw/excalidraw, Radix UI, shadcn/ui,
+             Tailwind CSS, framer-motion, lucide-react, axios, sonner
+  Backend  : FastAPI, Uvicorn, Motor, PyMongo, Pydantic, python-dotenv
+  Engine   : Express, ws, zod, mermaid, @excalidraw/mermaid-to-excalidraw,
+             @modelcontextprotocol/sdk, winston
+
+Each package's full license is available in its respective distribution
+(e.g. `node_modules/<pkg>/LICENSE` or the package's PyPI/npm listing).
+
+--------------------------------------------------------------------------------
+Emergent-specific components
+--------------------------------------------------------------------------------
+The frontend dev-dependency `@emergentbase/visual-edits` and the Emergent-managed
+Google OAuth flow (`EMERGENT_AUTH_URL`) are tied to the Emergent platform. They
+are optional for self-hosting and can be removed / replaced (see README).
